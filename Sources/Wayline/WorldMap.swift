@@ -183,17 +183,20 @@ struct RouteMap: View {
 
     var body: some View {
         let _ = settleTick
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !windowVisible || !(animates || moving))) { timeline in
-            let now = timeline.date
-            let region = region(at: now)
-            ZStack {
-                DotLayer(region: region, insets: insets, glows: glows, minSpacing: minDotSpacing)
+        ZStack {
+            Motion(active: windowVisible && moving) { timeline in
+                DotLayer(region: region(at: timeline.date), insets: insets, glows: glows, minSpacing: minDotSpacing)
                     .equatable()
+            }
+            Motion(active: windowVisible && (animates || moving)) { timeline in
+                let now = timeline.date
                 Canvas { ctx, size in
-                    draw(&ctx, size: size, region: region, time: now.timeIntervalSinceReferenceDate)
+                    draw(&ctx, size: size, region: region(at: now), time: now.timeIntervalSinceReferenceDate)
                 }
-                if showsLabels {
-                    LabelLayer(region: region, insets: insets, labels: labels)
+            }
+            if showsLabels {
+                Motion(active: windowVisible && moving) { timeline in
+                    LabelLayer(region: region(at: timeline.date), insets: insets, labels: labels)
                         .equatable()
                 }
             }

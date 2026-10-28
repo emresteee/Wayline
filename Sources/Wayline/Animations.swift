@@ -65,43 +65,131 @@ private struct WindowVisibilityReader: NSViewRepresentable {
     }
 }
 
+@MainActor
+final class MotionClock: ObservableObject {
+    static let shared = MotionClock()
+    static let interval = 1.0 / 24
+
+    @Published private(set) var now = Date()
+    private var timer: Timer?
+    private var users = 0
+
+    func retain() {
+        users += 1
+        guard timer == nil else { return }
+        now = Date()
+        let timer = Timer(timeInterval: Self.interval, repeats: true) { _ in
+            MainActor.assumeIsolated { MotionClock.shared.now = Date() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    func release() {
+        users = max(users - 1, 0)
+        guard users == 0 else { return }
+        timer?.invalidate()
+        timer = nil
+    }
+}
+
+struct MotionFrame {
+    let date: Date
+}
+
+struct Motion<Content: View>: View {
+    let active: Bool
+    @ViewBuilder let content: (MotionFrame) -> Content
+
+    var body: some View {
+        if active {
+            Running(content: content)
+        } else {
+            content(MotionFrame(date: Date()))
+        }
+    }
+
+    private struct Running: View {
+        @ObservedObject private var clock = MotionClock.shared
+        let content: (MotionFrame) -> Content
+
+        var body: some View {
+            content(MotionFrame(date: clock.now))
+                .onAppear { clock.retain() }
+                .onDisappear { clock.release() }
+        }
+    }
+}
+
 struct AuroraBackground: View {
     var status: TunnelStore.Status
     @Environment(\.windowVisible) private var windowVisible
 
     private var moving: Bool { status != .disconnected && windowVisible }
 
+    private static let blobs: [(x: Double, y: Double, r: Double, period: Double, tinted: Bool, k: Double)] = [
+        (0.70, 0.42, 0.46, 41, true, 1.0),
+        (0.48, 0.80, 0.38, 57, false, 0.55),
+        (0.90, 0.18, 0.30, 73, true, 0.7),
+    ]
+
+    private var strength: Double {
+        switch status {
+        case .connected: 0.13
+        case .connecting, .reconnecting: 0.09
+        case .disconnecting, .disconnected: 0.045
+        }
+    }
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 10, paused: !moving)) { timeline in
-            let t = moving ? timeline.date.timeIntervalSinceReferenceDate : 0
-            Canvas { ctx, size in
-                let tint = status.color
-                let strength: Double = switch status {
-                case .connected: 0.13
-                case .connecting, .reconnecting: 0.09
-                case .disconnecting, .disconnected: 0.045
-                }
-                let blobs: [(x: Double, y: Double, r: Double, p: Double, c: Color, k: Double)] = [
-                    (0.70, 0.42, 0.46, 41, tint, 1.0),
-                    (0.48, 0.80, 0.38, 57, Theme.sky, 0.55),
-                    (0.90, 0.18, 0.30, 73, tint, 0.7),
-                ]
-                for (i, b) in blobs.enumerated() {
-                    let phase = t / b.p * 2 * .pi + Double(i) * 1.7
-                    let center = CGPoint(x: size.width * (b.x + 0.06 * sin(phase)),
-                                         y: size.height * (b.y + 0.08 * cos(phase * 0.8)))
-                    let r = max(size.width, size.height) * b.r
-                    let rect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
-                        .intersection(CGRect(origin: .zero, size: size))
-                    guard !rect.isNull else { continue }
-                    ctx.fill(Path(rect), with: .radialGradient(
-                        Gradient(colors: [b.c.opacity(strength * b.k), b.c.opacity(0)]),
-                        center: center, startRadius: 0, endRadius: r))
+        GeometryReader { geo in
+            Motion(active: moving) { timeline in
+                let t = moving ? timeline.date.timeIntervalSinceReferenceDate : 0
+                ZStack {
+                    ForEach(Self.blobs.indices, id: \.self) { i in
+                        let b = Self.blobs[i]
+                        let phase = t / b.period * 2 * .pi + Double(i) * 1.7
+                        let d = max(geo.size.width, geo.size.height) * b.r * 2
+                        AuroraSprite.image(b.tinted ? status.color : Theme.sky)
+                            .resizable()
+                            .frame(width: d, height: d)
+                            .opacity(strength * b.k)
+                            .position(x: geo.size.width * (b.x + 0.06 * sin(phase)),
+                                      y: geo.size.height * (b.y + 0.08 * cos(phase * 0.8)))
+                            .id(b.tinted ? "\(i)-\(status)" : "\(i)")
+                            .transition(.opacity)
+                    }
                 }
             }
         }
+        .clipped()
         .animation(.easeInOut(duration: 1.2), value: status)
         .allowsHitTesting(false)
+    }
+}
+
+@MainActor
+private enum AuroraSprite {
+    private static var cache: [String: Image] = [:]
+
+    static func image(_ color: Color) -> Image {
+        let key = color.description
+        if let image = cache[key] { return image }
+        let side = 512
+        let image: Image
+        if let ctx = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+                               space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+           let cg = NSColor(color).usingColorSpace(.deviceRGB)?.cgColor,
+           let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                     colors: [cg, cg.copy(alpha: 0) ?? cg] as CFArray, locations: [0, 1]) {
+            let c = CGPoint(x: side / 2, y: side / 2)
+            ctx.drawRadialGradient(gradient, startCenter: c, startRadius: 0, endCenter: c, endRadius: CGFloat(side / 2), options: [])
+            image = ctx.makeImage().map { Image(decorative: $0, scale: 1) } ?? Image(nsImage: NSImage())
+        } else {
+            image = Image(nsImage: NSImage())
+        }
+        cache[key] = image
+        return image
     }
 }
 
@@ -131,7 +219,7 @@ struct ValueGlow: ViewModifier {
     private static let duration = 1.3
 
     func body(content: Content) -> some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: changedAt == nil || !windowVisible)) { timeline in
+        Motion(active: changedAt != nil && windowVisible) { timeline in
             let glow = level(at: timeline.date)
             content
                 .shadow(color: color.opacity(0.55 * glow), radius: glow > 0 ? 7 : 0)

@@ -13,7 +13,7 @@ struct PowerButton: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !status.isTransitioning || !windowVisible)) { timeline in
+                Motion(active: status.isTransitioning && windowVisible) { timeline in
                     let t = status.isTransitioning ? timeline.date.timeIntervalSinceReferenceDate : nil
                     Canvas { ctx, size in
                         let c = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -53,7 +53,7 @@ struct PowerButton: View {
                     .strokeBorder(status.color.opacity(lit ? 0.75 : (hovering ? 0.45 : 0.22)), lineWidth: 1.5)
 
                 if status.isTransitioning {
-                    TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !windowVisible)) { timeline in
+                    Motion(active: windowVisible) { timeline in
                         let t = timeline.date.timeIntervalSinceReferenceDate
                         Circle()
                             .inset(by: 14)

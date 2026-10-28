@@ -689,7 +689,7 @@ private struct SessionCard: View {
         Card(padding: 14) {
             VStack(alignment: .leading, spacing: 10) {
                 SectionLabel(text: L("Oturum", "Session"))
-                TimelineView(.animation(minimumInterval: 0.5, paused: !windowVisible || live == nil)) { timeline in
+                Motion(active: windowVisible && live != nil) { timeline in
                     LiveValue(text: live?.since.map { Format.duration(timeline.date.timeIntervalSince($0)) } ?? "—",
                               color: live == nil ? Theme.faint : Theme.text, size: 20, glows: false)
                 }
